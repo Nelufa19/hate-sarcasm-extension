@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body {
+    width: 240px;
+    font-family: system-ui, sans-serif;
+    background: #1a1d23;
+    color: #e6e6e6;
+    padding: 12px;
+  }
+  h1 { font-size: 0.9rem; margin: 0 0 8px; }
+  p { font-size: 0.8rem; color: #aeb2b8; margin: 4px 0; }
+  #status { font-weight: 600; }
+  #status.ok { color: #4caf7d; }
+  #status.down { color: #e05a5a; }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 10px 0 8px;
+  }
+  .toggle-label { font-size: 0.85rem; }
+
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 38px;
+    height: 20px;
+    flex: none;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: #3a3d44;
+    border-radius: 20px;
+    transition: background 0.15s ease;
+  }
+  .slider::before {
+    content: "";
+    position: absolute;
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: #e6e6e6;
+    border-radius: 50%;
+    transition: transform 0.15s ease;
+  }
+  input:checked + .slider { background: #4caf7d; }
+  input:checked + .slider::before { transform: translateX(18px); }
+</style>
+</head>
+<body>
+  <h1>Hate & Sarcasm Blur</h1>
+
+  <div class="toggle-row">
+    <span class="toggle-label">Enabled</span>
+    <label class="switch">
+      <input type="checkbox" id="enabledToggle" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <p>Backend: <span id="status">checking...</span></p>
+  <p>When disabled, blurred text stays visible on the page and no new text is scanned.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

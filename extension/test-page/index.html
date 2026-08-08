@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Extension Test Feed</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    max-width: 600px;
+    margin: 2rem auto;
+    background: #0f1115;
+    color: #e6e6e6;
+  }
+  h1 { font-size: 1.1rem; color: #9aa0a6; }
+  #feed { display: flex; flex-direction: column; gap: 12px; }
+  .post {
+    border: 1px solid #2a2d34;
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: #1a1d23;
+  }
+  .post .meta {
+    font-size: 0.75rem;
+    color: #8a8f98;
+    margin-bottom: 6px;
+  }
+  .post .body {
+    font-size: 0.95rem;
+    line-height: 1.4;
+  }
+  #controls {
+    position: sticky;
+    top: 0;
+    background: #0f1115;
+    padding: 10px 0;
+    display: flex;
+    gap: 8px;
+  }
+  button {
+    background: #2a2d34;
+    color: #e6e6e6;
+    border: 1px solid #3a3d44;
+    border-radius: 6px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  button:hover { background: #3a3d44; }
+</style>
+</head>
+<body>
+
+<h1>Test Feed — not a real social network, just fixed + injectable post-like divs to validate the extension's observer pipeline</h1>
+
+<div id="controls">
+  <button id="addPostBtn">Add a new post (simulates infinite scroll)</button>
+  <button id="addBurstBtn">Add 5 posts at once (simulates a fast-scroll burst)</button>
+</div>
+
+<div id="feed">
+  <div class="post">
+    <div class="meta">user_amina · English</div>
+    <div class="body">Had a great walk this morning, the weather was perfect.</div>
+  </div>
+
+  <div class="post">
+    <div class="meta">user_kabir · Bangla</div>
+    <div class="body">তুমি খুব ভালো কাজ করেছ, সত্যিই দারুণ।</div>
+  </div>
+
+  <div class="post">
+    <div class="meta">user_troll99 · English</div>
+    <div class="body">Oh sure, because that plan worked out SO well last time. What a genius.</div>
+  </div>
+
+  <div class="post">
+    <div class="meta">user_sam · English</div>
+    <div class="body">Anyone have recommendations for a good sci-fi book?</div>
+  </div>
+</div>
+
+<script>
+  // Simulates a live feed: clicking these buttons inserts new .post elements
+  // into #feed, the same way a real infinite-scroll site's own JS would.
+  // The extension's content script should notice these via MutationObserver
+  // without this page doing anything extension-aware itself.
+
+  const SAMPLE_POSTS = [
+    { user: "user_random1", lang: "English", text: "Congratulations on the new job, well deserved!" },
+    { user: "user_random2", lang: "English", text: "Oh great, ANOTHER Monday. Just what I needed. Truly blessed." },
+    { user: "user_random3", lang: "Bangla", text: "কুত্তার বাচ্চা তুই একটা অকর্মা।" },
+    { user: "user_random4", lang: "English", text: "The new coffee shop downtown has amazing pastries." },
+    { user: "user_random5", lang: "English", text: "Wow, you actually showed up on time for once. Miracles happen." },
+  ];
+
+  let counter = 0;
+
+  function addPost() {
+    const sample = SAMPLE_POSTS[counter % SAMPLE_POSTS.length];
+    counter++;
+
+    const post = document.createElement("div");
+    post.className = "post";
+    post.innerHTML = `
+      <div class="meta">${sample.user} · ${sample.lang}</div>
+      <div class="body">${sample.text}</div>
+    `;
+    document.getElementById("feed").appendChild(post);
+  }
+
+  document.getElementById("addPostBtn").addEventListener("click", addPost);
+  document.getElementById("addBurstBtn").addEventListener("click", () => {
+    for (let i = 0; i < 5; i++) addPost();
+  });
+</script>
+
+</body>
+</html>

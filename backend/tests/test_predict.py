@@ -63,5 +63,12 @@ def test_predict_rejects_missing_fields(client):
 
 
 def test_predict_rejects_text_over_max_length(client):
-    resp = client.post("/predict", json={"text": "a" * 2001, "language": "en"})
+    resp = client.post("/predict", json={"text": "a" * 10001, "language": "en"})
     assert resp.status_code == 422
+
+
+def test_predict_accepts_long_text_within_new_limit(client):
+    # Real-world content (e.g. long blog comments) can be a few thousand
+    # characters -- this must not be silently rejected before scoring.
+    resp = client.post("/predict", json={"text": "a" * 5000, "language": "en"})
+    assert resp.status_code == 200
