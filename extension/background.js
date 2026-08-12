@@ -19,26 +19,87 @@
  */
 
 const BATCH_ENDPOINT = "http://localhost:8000/predict/batch";
+const FEEDBACK_ENDPOINT = "http://localhost:8000/feedback";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== "PREDICT_BATCH") return false; // not for us
+  if (message.type === "PREDICT_BATCH") {
+    postJson(BATCH_ENDPOINT, { items: message.items }).then(sendResponse);
+    return true; // keep the message channel open for the async sendResponse
+  }
 
-  fetch(BATCH_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items: message.items }),
-  })
-    .then(async (res) => {
-      if (!res.ok) {
-        sendResponse({ ok: false, status: res.status });
-        return;
-      }
-      const data = await res.json();
-      sendResponse({ ok: true, data });
-    })
-    .catch((err) => {
-      sendResponse({ ok: false, error: String(err) });
+  if (message.type === "SEND_FEEDBACK") {
+    postJson(FEEDBACK_ENDPOINT, {
+      text: message.text,
+      language: message.language,
+      label: message.label,
+    }).then(sendResponse);
+    return true;
+  }
+
+  return false; // not for us
+});
+
+async function postJson(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, data: await res.json() };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
 
-  return true; // keep the message channel open for the async sendResponse above
+// ---- right-click corrections ----------------------------------------------
+// Teaching the backend one example. The correction is live for the very next
+// prediction -- no retrain, no reload -- so the content script just re-scores
+// the affected lines in place once this returns.
+//
+// contexts: ["all"] rather than ["selection"] on purpose: blurred text carries
+// `user-select: none`, so a false positive can never be selected. Without a
+// no-selection path there would be no way to un-blur anything.
+const MENU_ITEMS = [
+  { id: "hs-mark-hateful", title: "Mark as hateful", label: "hateful" },
+  { id: "hs-mark-sarcastic", title: "Mark as sarcastic", label: "sarcastic" },
+  // The model is 3-class, so "not hateful" and "not sarcastic" are the same
+  // stored label -- one item, named for both, rather than two that would
+  // secretly do the same thing.
+  { id: "hs-mark-clean", title: "Mark as neither (not hateful or sarcastic)", label: "non_hateful" },
+];
+
+chrome.runtime.onInstalled.addListener(() => {
+  // removeAll first so a reload during development doesn't throw on
+  // duplicate menu ids.
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "hs-root",
+      title: "Hate & Sarcasm Blur",
+      contexts: ["all"],
+    });
+    for (const item of MENU_ITEMS) {
+      chrome.contextMenus.create({
+        id: item.id,
+        parentId: "hs-root",
+        title: item.title,
+        contexts: ["all"],
+      });
+    }
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const item = MENU_ITEMS.find((m) => m.id === info.menuItemId);
+  if (!item || !tab || tab.id === undefined) return;
+
+  // The content script resolves WHICH text was meant (selection, or the line
+  // under the cursor) -- that needs DOM and line-grouping knowledge this
+  // worker doesn't have -- then calls back into SEND_FEEDBACK above.
+  chrome.tabs
+    .sendMessage(tab.id, { type: "CONTEXT_FEEDBACK", label: item.label })
+    .catch((err) => {
+      console.warn(`[hate-sarcasm-extension] could not reach page: ${err}`);
+    });
 });

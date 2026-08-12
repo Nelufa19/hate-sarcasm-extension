@@ -53,7 +53,17 @@ class LightweightDualHeadModel(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         token_type_ids: Optional[torch.Tensor] = None,
+        return_cls: bool = False,
     ):
+        """
+        `return_cls=True` additionally returns the pooled [CLS] representation
+        (shape (B, hidden_size)). This is purely an extra *output* -- it adds
+        no parameters and changes no computation, so checkpoint compatibility
+        is unaffected; it exists so the feedback store's similarity index can
+        reuse the encoder pass a prediction was already going to run, instead
+        of paying for a second forward. In eval mode self.dropout is the
+        identity, so the returned vector is deterministic.
+        """
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
 
         cls_output = self.dropout(outputs.last_hidden_state[:, 0, :])
@@ -69,4 +79,6 @@ class LightweightDualHeadModel(nn.Module):
         fused = torch.cat([cls_output, hate_hidden, sarc_hidden], dim=1)
         logits_3class = self.fusion_mlp(fused)
 
+        if return_cls:
+            return logits_3class, hate_logit.squeeze(-1), sarc_logit.squeeze(-1), cls_output
         return logits_3class, hate_logit.squeeze(-1), sarc_logit.squeeze(-1)

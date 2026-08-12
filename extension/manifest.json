@@ -3,7 +3,7 @@
   "name": "Hate & Sarcasm Blur",
   "version": "0.1.0",
   "description": "Automatically blurs hateful or sarcastic-hateful text on feed-style pages.",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "contextMenus"],
   "host_permissions": [
     "http://localhost:8000/*",
     "<all_urls>"

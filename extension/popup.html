@@ -12,7 +12,9 @@
   }
   h1 { font-size: 0.9rem; margin: 0 0 8px; }
   p { font-size: 0.8rem; color: #aeb2b8; margin: 4px 0; }
-  #status { font-weight: 600; }
+  #status, #taught { font-weight: 600; }
+  .hint { border-top: 1px solid #2c2f36; padding-top: 8px; margin-top: 10px; }
+  .hint em { color: #d6d8dc; font-style: normal; }
   #status.ok { color: #4caf7d; }
   #status.down { color: #e05a5a; }
 
@@ -67,6 +69,16 @@
   </div>
 
   <p>Backend: <span id="status">checking...</span></p>
+  <p>Taught: <span id="taught">...</span></p>
+  <p class="hint">
+    <strong>Wrongly flagged?</strong> Press and hold it to read it, then pick
+    <em>Hateful</em>, <em>Sarcastic</em> or <em>Neither</em>.
+  </p>
+  <p class="hint" style="border-top:0; padding-top:0; margin-top:6px;">
+    <strong>Missed something?</strong> Right-click it &rarr;
+    <em>Hate &amp; Sarcasm Blur</em> &rarr; mark it.
+  </p>
+  <p>Corrections apply immediately, on this and every later page.</p>
   <p>When disabled, blurred text stays visible on the page and no new text is scanned.</p>
   <script src="popup.js"></script>
 </body>
