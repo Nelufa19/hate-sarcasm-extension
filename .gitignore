@@ -13,6 +13,10 @@ backend/data/
 # Fine-tuned checkpoints produced by the automatic retrain pipeline. Every run
 # writes a full ~500 MB model.pt (rejected candidates included, deliberately --
 # they stay inspectable), so this directory grows fast and must never be
-# committed. The ORIGINAL checkpoints in backend/models/Lightweight */ are not
-# covered by this and remain tracked.
+# committed.
 backend/models/retrained/
+
+# Base checkpoints exceed GitHub's 100MB file limit; fetch them separately
+# (see SETUP.md) rather than committing them.
+backend/models/Lightweight Bangla/model.pt
+backend/models/Lightweight English/model.pt
