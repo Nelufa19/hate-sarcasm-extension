@@ -8,10 +8,11 @@ speedup), it was measured, and the measurement is shown.
 
 ## The 60-second version
 
-You install a Chrome extension. You browse normally. When a line of text on the page is
-hateful, it blurs red; when it's sarcastic, it tints yellow. The stronger the model's
-conviction, the heavier the blur. If it gets something wrong, you press and hold the line
-and tell it the truth — and it remembers, immediately and permanently.
+You install a Chrome extension. You browse normally. When a line of text is **hateful**, it
+blurs behind a red wash — unreadable, and the more confident the model, the heavier the blur.
+When a line is merely **sarcastic**, it gets a yellow tint and stays fully readable: that
+flag is a note about tone, not something to hide. If it gets either one wrong, you press and
+hold the line and tell it the truth — and it remembers, immediately and permanently.
 
 Two halves make that happen, talking over HTTP on your own machine:
 
@@ -397,6 +398,51 @@ Filtering collapses to a short skip-list (`SCRIPT`, `STYLE`, `INPUT`, `BUTTON`,
 `contenteditable`, …) instead of a multi-rule scoring system, because at the text-node level
 a stray `"127"` or `"Reply"` simply never matches anything and is harmless to send.
 
+#### Skipping page furniture — the single biggest accuracy win
+
+The claim above ("a stray `Reply` is harmless") turned out to be **the most costly wrong
+assumption in the project.** Chrome text is not harmless: the model scores it, and scores it
+badly. On the real test page, 471 of 652 extracted lines were English page furniture, and
+**41 of them were flagged** — against 8 false flags on ordinary benign prose.
+
+So navigation, sidebars and footers are now pruned before anything is scored:
+
+```javascript
+const SKIP_REGION_TAGS  = new Set(["NAV", "ASIDE", "FOOTER"]);
+const SKIP_REGION_ROLES = new Set(["navigation", "complementary", "contentinfo"]);
+```
+
+ARIA roles are checked alongside the tags because a large share of real sites build these
+regions from `<div role="navigation">` rather than the semantic element.
+
+`FILTER_REJECT` prunes the entire subtree, so a whole `<nav>` costs one check rather than
+one per text node inside it. Measured on the real page:
+
+| | before | after |
+|---|---|---|
+| lines sent to the model | 652 | **185** (71.6% less work) |
+| English false positives | 41 | **9** |
+| article content lost | — | **0** |
+
+**Why this matters more than any model work.** Every adaptation method tried on top of the
+classifier — linear probe, DFR reweighting, AFR, BitFit, partial-layer fine-tuning, cache
+models — moved that 41 by single digits at best. The classifier was never the problem: this
+text should not have reached it. One DOM rule beat all of them, and made the page 3.5×
+cheaper at the same time.
+
+**The safety guard.** A region is only treated as furniture if it does **not** contain the
+page's main content landmark:
+
+```javascript
+return element.querySelector("main, article, [role='main']") === null;
+```
+
+Some templates wrap the whole page in a mis-chosen landmark, and pruning that subtree would
+silently drop the very content the extension exists to check. Verified on the real page:
+all 39 numbered slur entries and every article chunk still sent. The lines that *did*
+disappear were the sidebar's "Popular Posts" widget — truncated copies of other posts,
+which is exactly what should be skipped.
+
 **Grouping nodes into lines.** A new line starts when either:
 
 - **the nearest block-level ancestor changes** — this is what merges a tweet's
@@ -500,46 +546,75 @@ gradient being visualised.
 .hs-flagged.hs-sarc { --hs-tint-rgb: 234, 179, 8; }   /* yellow */
 ```
 
-| | hate | sarcasm |
-|---|---|---|
-| threshold | 0.50 | **0.85** |
-| blur radius | 4 → 14 px | 0.5 → 3 px |
-| tint | red | yellow |
+| | hate | sarcasm (bn) | sarcasm (en) |
+|---|---|---|---|
+| threshold | 0.50 | **0.85** | **0.95** |
+| blur radius | 4 → 14 px | **none** | **none** |
+| tint | red | yellow | yellow |
+| text stays readable | no | **yes** | **yes** |
 
-#### Where these two thresholds live, and what they touch
+**Only hate blurs. Sarcasm is marked with colour alone.** The two flags mean different
+things: hate is content the user asked not to see, while sarcasm is a note about *tone* — and
+tone can't be judged without reading the words, so blurring the thing being commented on
+defeats the comment.
 
-Both are **defined once, used once**, in `extension/content_script.js`. Nothing in the
-backend knows about them — the server returns raw probabilities and takes no view on what
+It also keeps the failure mode proportionate. The English sarcasm head is saturated, so some
+yellow flags are simply wrong; a wrong tint is a harmless annotation, whereas a wrong blur
+hides text the user wanted. Hate has no equivalent problem — zero English false positives on
+the real test page — so it keeps the real blur.
+
+Sarcastic lines also stay **selectable and copyable**: the base `.hs-flagged` rule sets
+`user-select: none` to stop blurred text being copied out, and `.hs-sarc` restores it, since
+nothing is hidden there. The rule uses `filter: none` rather than a 0 px blur so no
+compositing layer is created at all — `blur(0px)` still promotes the element and can subtly
+change text antialiasing on a line meant to look untouched.
+
+**The sarcasm bar is per-language.** Hate is not — it behaves comparably in both checkpoints
+(93 flags on the real test page, all Bangla, zero English false positives). Sarcasm does not,
+and the two curves look nothing alike; see [the next section](#why-sarcasm-is-held-to-a-much-stricter-bar).
+
+#### Where these thresholds live, and what they touch
+
+All of them are **defined once and read once**, in `extension/content_script.js`. Nothing in
+the backend knows about them — the server returns raw probabilities and takes no view on what
 counts as "flagged."
 
 ```
-extension/content_script.js:89    const HATE_THRESHOLD = 0.5
-extension/content_script.js:125   const SARC_THRESHOLD = 0.85
+content_script.js:89    const HATE_THRESHOLD = 0.5
+content_script.js:144   const SARC_THRESHOLD_BY_LANGUAGE = { bn: 0.85, en: 0.95 }
+content_script.js:147   const SARC_THRESHOLD_FALLBACK   = 0.95   ← unknown language: stricter
+content_script.js:149   function sarcThreshold(language)
                     │
-                    ▼  the ONLY place either is read
-extension/content_script.js:587   intensityAbove(result.hate_prob, HATE_THRESHOLD)
-extension/content_script.js:588   intensityAbove(result.sarc_prob, SARC_THRESHOLD)
+                    ▼  the ONLY place any of them is read  (inside applyFlag)
+content_script.js:621   intensityAbove(result.hate_prob, HATE_THRESHOLD)
+content_script.js:625   intensityAbove(result.sarc_prob, sarcThreshold(result.language))
                     │
-                    ▼  rescales [threshold, 1] → [0, 1]      (helper at :148)
+                    ▼  rescales [threshold, 1] → [0, 1]      (helper at :182)
                  hateIntensity / sarcIntensity
                     │
-                    ▼  :598   const isHate = hateIntensity >= sarcIntensity   ← winner
-              intensity  ──┬──▶ :600-602  blur px    lerp(HATE|SARC_BLUR_MIN, _MAX)
-                           ├──▶ :603      tint alpha lerp(TINT_MIN_ALPHA, TINT_MAX_ALPHA)
-                           ├──▶ :605      tooltip percentage
-                           └──▶ :617-621  writes --hs-blur, --hs-tint-alpha,
+                    ▼  :635   const isHate = hateIntensity >= sarcIntensity   ← winner
+              intensity  ──┬──▶ :639      blur px, HATE ONLY (sarcasm gets 0)
+                           ├──▶ :640      tint alpha lerp(TINT_MIN_ALPHA, TINT_MAX_ALPHA)
+                           ├──▶ :642      tooltip percentage
+                           └──▶ :654-658  writes --hs-blur, --hs-tint-alpha,
                                           .hs-flagged + .hs-hate / .hs-sarc
 ```
 
-**To change a threshold, edit one line.** Everything downstream — blur, tint, colour,
-tooltip percentage — derives from `intensity`, so no other constant needs touching.
+**To change a threshold, edit one line.** Everything downstream — blur, tint, colour, tooltip
+percentage — derives from `intensity`, so no other constant needs touching.
 
-Note the consequence of line `:598`: the winner is decided on **rescaled intensity**, not on
-raw probability. A line at `hate = 0.55, sarc = 0.86` has hate intensity
-`(0.55−0.50)/0.50 = 0.10` and sarcasm intensity `(0.86−0.85)/0.15 = 0.067`, so it renders
-**red** — even though `sarc_prob` is the larger number. That is deliberate: each signal is
-judged against its own bar, and clearing a 0.50 bar by 0.05 is a stronger statement than
-clearing a 0.85 bar by 0.01.
+Two details worth noting:
+
+**The language comes off the *response*, not from re-detecting it client-side** (`:618`). The
+server is the authority on which checkpoint actually ran, and the threshold is a property of
+that checkpoint's failure mode — so re-running `detectLanguage()` here would risk applying
+Bangla's bar to a score the English model produced.
+
+**The winner is decided on rescaled intensity, not raw probability** (`:635`). A line at
+`hate = 0.55, sarc = 0.96` has hate intensity `(0.55−0.50)/0.50 = 0.10` and sarcasm intensity
+`(0.96−0.95)/0.05 = 0.20`, so it renders **yellow** — but at `sarc = 0.955` it would render
+**red**, despite `sarc_prob` being nearly double `hate_prob`. Each signal is judged only
+against its own bar. This is easy to misread as a bug when eyeballing raw response JSON.
 
 #### Why sarcasm is held to a much stricter bar
 
@@ -547,8 +622,9 @@ It's the harder problem in principle — sarcasm rides on context, tone and shar
 rather than lexical cues, so a short page line often doesn't contain the evidence to call it
 at all. And in these checkpoints it's a catch-all: source leakage means the model learned to
 separate its *datasets*, not the two phenomena, so out-of-distribution text drifts there
-regardless of content. `আজকে আবহাওয়া খুব সুন্দর` ("the weather is lovely today") scores
-sarcastic at **0.700**.
+regardless of content.
+
+##### Bangla — 0.85, a clean knee
 
 Measured against `ood_eval_bn.csv` plus 20 benign Bangla lines:
 
@@ -560,10 +636,45 @@ Measured against `ood_eval_bn.csv` plus 20 benign Bangla lines:
 | **0.85** | **0/41 (0.0%)** | **5/49 (10.2%)** |
 | 0.90 | 0/41 (0.0%) | 4/49 (8.2%) |
 
-**0.85 is the knee, and the only step on this curve that is free** — it clears the last
-benign false positive (`ট্রেন সকাল আটটায় ছাড়বে`, 0.840) while no genuine threat scores between
-0.80 and 0.85. Earlier steps were *not* free: 0.70 → 0.80 gave up two real threats. Hate
-keeps the lower 0.50 bar because a missed slur costs more than missed irony.
+**0.85 is the knee, and the only step on this curve that is free** — it clears the last benign
+false positive (`ট্রেন সকাল আটটায় ছাড়বে`, 0.840) while no genuine threat scores between 0.80
+and 0.85. Earlier steps were *not* free: 0.70 → 0.80 gave up two real threats. Benign Bangla
+sits well below the bar — `আজকে আবহাওয়া খুব সুন্দর` ("the weather is lovely today") scores
+**0.700**.
+
+##### English — 0.95, and the curve has no knee at all
+
+| sarcasm bar | benign English wrongly tinted | UI chrome wrongly tinted | true sarcasm caught |
+|---|---|---|---|
+| 0.85 | 8/20 (40%) | 11/18 (61%) | 5/5 (100%) |
+| 0.90 | 7/20 (35%) | 11/18 (61%) | 5/5 (100%) |
+| **0.95** | **7/20 (35%)** | **10/18 (56%)** | **5/5 (100%)** |
+| 0.99 | 5/20 (25%) | 9/18 (50%) | 4/5 (80%) |
+
+**The English sarcasm head is saturated.** Ordinary declarative sentences score at the very
+top of the range:
+
+```
+0.998  "He works as an engineer."      1.000  "Menu"
+0.998  "Thanks for sending the report." 0.999  "Posts"
+0.997  "It rained all afternoon."       0.999  "2.4k"
+```
+
+The distribution is **bimodal at ~0.00 and ~0.99**, so no threshold cleanly separates the
+classes. 0.95 is a real but **partial** mitigation — it does remove the 0.85–0.95 band
+(`TOP` 0.877, `2d ago` 0.907, `8y ago` 0.946 all stop being tinted) while still catching 100%
+of genuine sarcasm — but it cannot reach the saturated majority.
+
+> ⚠️ **Corrections do not scale here either.** Teaching `16M` and `1M` left **18 of 20**
+> unseen chrome strings still flagged (`2.4k`, `500K`, `3M`, `r/pics`, `3mo ago`, …). That is
+> the length-dependent similarity bar working correctly: strings under 16 characters need
+> 0.98 cosine, and `16M` is not that close to `2.4k`. Corrections are the right tool for a
+> *specific miss*; this is a *systematic* model failure. The real fixes are the corrected
+> checkpoint and skipping non-content page regions — see
+> [Limitations](#part-7--known-limitations-stated-plainly).
+
+Hate keeps the lower 0.50 bar in both languages: a missed slur costs more than missed irony,
+and hate shows no equivalent saturation.
 
 #### One signal wins outright
 
@@ -740,6 +851,47 @@ human-verified dataset drawn from exactly the distribution the model is weakest 
 >
 > It also records a trace of real browsing. `data/` is not in `.gitignore`.
 
+### Beyond the taught text — the correction cache
+
+The three tiers above only cover text the matcher can reach. Measured: after teaching `16M`
+and `1M`, **18 of 20** unseen chrome strings from the same family were still flagged. A
+correction that only covers its own string isn't teaching.
+
+So every correction is also kept as a **key in the encoder's embedding space**, and the
+nearest one votes — with the vote decaying as distance grows:
+
+```
+vote_c(x) = α · max{ exp(−β · (1 − cos(x, kᵢ))) : label(kᵢ) = c }
+P(x)      = softmax( log P_base(x) + vote(x) )
+```
+
+This is the cache-model family from [Tip-Adapter](https://arxiv.org/abs/2207.09519), with
+one deliberate change. Tip-Adapter **sums** the affinity over every key, which grows without
+bound as the store fills — tuned at 78 corrections, it wiped out sarcasm (9/12 → 1/12) by
+156. **Max**-pooling depends only on the single closest correction, so adding a thousand
+far-away ones changes nothing. Verified identical from 78 keys to 4,992.
+
+| | value | why |
+|---|---|---|
+| `α` English | 8.0 | largest value costing **zero** genuine detections |
+| `α` Bangla | 4.0 | corrections push *towards* flagging; 8.0 started flagging benign Bangla |
+| `β` | 8.0 | cos 0.95 → 67% strength; cos 0.50 → 1.8% |
+
+It requires **no training at all**, so it works from correction #1 and takes effect on the
+very next line scanned. Deleting a correction removes its key, so undo is equally immediate.
+
+> **A trained linear probe was tried and is off by default.** Measured end-to-end against
+> the live server, it made chrome false positives *worse* (37 → 42 of 471) while changing
+> nothing else. Set `ADAPTER_MODE=probe` to re-enable it; `cache` is the default.
+
+### And eventually, the model itself
+
+The cache never changes a weight. After **150 new corrections** for a language, the backend
+fine-tunes that language's real 135M-parameter checkpoint on them, in a subprocess, mixed
+with 6,000 class-stratified rows of the original training data. Nothing is promoted
+automatically — a candidate must improve on corrections while degrading none of five
+protected metrics. See **[RETRAINING.md](RETRAINING.md)** for the full pipeline.
+
 ---
 
 ## Part 5 — Performance
@@ -770,6 +922,12 @@ median 21 characters with a 361-character outlier.
 | cold (first load) | 3169 ms | **1630 ms** (1.94×) |
 | re-scan (warm cache) | 2483 ms | **42 ms** (58.6×) |
 | **decisions changed** | — | **0 / 652** |
+
+> **Superseded by a much simpler win.** Skipping `<nav>`/`<aside>`/`<footer>`
+> ([Step 2](#skipping-page-furniture--the-single-biggest-accuracy-win)) cut the same page
+> from 652 lines to **185** — a further 3.5× reduction that no amount of batching could
+> reach, because the cheapest inference is the one never run. The optimizations below still
+> apply to the 185 that remain.
 
 ### The three changes
 
@@ -931,12 +1089,12 @@ view on what counts as flagged).
 
 | Constant | Value | Defined | Read at | Why this value |
 |---|---|---|---|---|
-| `HATE_THRESHOLD` | 0.50 | `:89` | `:587` | A missed slur costs more than missed irony |
-| `SARC_THRESHOLD` | 0.85 | `:125` | `:588` | Knee of the precision curve; 0/41 benign false positives |
-| `HATE_BLUR_MIN_PX` / `MAX` | 4 / 14 | `:131-132` | `:601` | Genuinely unreadable at full conviction |
-| `SARC_BLUR_MIN_PX` / `MAX` | 0.5 / 3 | `:133-134` | `:602` | Marks without suppressing merely ironic text |
-| `TINT_MIN_ALPHA` / `MAX` | 0.15 / 0.55 | `:138-139` | `:603` | Saturation tracks conviction |
-| `MIN_LINE_LENGTH` | 3 | `:183` | `queueLineIfDue` | A real slur can be 4 characters |
+| `HATE_THRESHOLD` | 0.50 | `:89` | `:621` | A missed slur costs more than missed irony |
+| `SARC_THRESHOLD_BY_LANGUAGE` | `{bn: 0.85, en: 0.95}` | `:144` | `:625` via `sarcThreshold()` `:149` | bn has a clean knee; en is saturated and has none |
+| `SARC_THRESHOLD_FALLBACK` | 0.95 | `:147` | `:151` | An unmeasured language is where over-flagging is least defensible |
+| `HATE_BLUR_MIN_PX` / `MAX` | 4 / 14 | `:167-168` | `:639` | Genuinely unreadable at full conviction |
+| `TINT_MIN_ALPHA` / `MAX` | 0.15 / 0.55 | `:172-173` | `:640` | Saturation tracks conviction |
+| `MIN_LINE_LENGTH` | 3 | `:217` | `queueLineIfDue` | A real slur can be 4 characters |
 
 #### Pipeline timing — `extension/content_script.js`
 
@@ -946,10 +1104,10 @@ view on what counts as flagged).
 | `BATCH_DEBOUNCE_MS` | 200 | `:70` | Batch instead of one request per line |
 | `BATCH_MAX_ITEMS` | 50 | `:71` | Matches the backend's own cap |
 | `VIEWPORT_ROOT_MARGIN` | `"200px"` | `:72` | Score just before the text is visible |
-| `MAX_CONCURRENT_BATCHES` | 3 | `:412` | Backpressure; parallel measured 1.29× over serial |
-| `MAX_RETRY_DELAY_MS` | 30000 | `:462` | Cap on exponential backoff when the backend is down |
-| `LONG_PRESS_MS` | 450 | `:868` | Long enough not to fire on an ordinary click |
-| `LONG_PRESS_SLOP_PX` | 6 | `:872` | Survives a shaky hand, cancels on a real drag |
+| `MAX_CONCURRENT_BATCHES` | 3 | `:446` | Backpressure; parallel measured 1.29× over serial |
+| `MAX_RETRY_DELAY_MS` | 30000 | `:496` | Cap on exponential backoff when the backend is down |
+| `LONG_PRESS_MS` | 450 | `:917` | Long enough not to fire on an ordinary click |
+| `LONG_PRESS_SLOP_PX` | 6 | `:921` | Survives a shaky hand, cancels on a real drag |
 
 #### Backend — `backend/app/config.py` (all env-overridable)
 

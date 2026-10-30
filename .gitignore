@@ -4,3 +4,15 @@ __pycache__/
 .env
 *.log
 .DS_Store
+
+# User corrections. Useful as training data, but it accumulates a trace of
+# whatever pages were browsed while the extension was on, so it should never be
+# committed or shared by accident. Export it deliberately when you want it.
+backend/data/
+
+# Fine-tuned checkpoints produced by the automatic retrain pipeline. Every run
+# writes a full ~500 MB model.pt (rejected candidates included, deliberately --
+# they stay inspectable), so this directory grows fast and must never be
+# committed. The ORIGINAL checkpoints in backend/models/Lightweight */ are not
+# covered by this and remain tracked.
+backend/models/retrained/
